@@ -1,0 +1,70 @@
+From 964e19efd0677d5557b07b15f508902d7a635b92 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Fri, 31 Jul 2026 19:02:16 -0400
+Subject: [PATCH 2/4] HID: apple-ibridge: populate dev_rdesc in the ll_driver
+ parse callback
+
+appleib_ll_parse() returns 0 without doing anything, on the stated
+assumption that hid_parse_report() has already been called for the virtual
+sub-device. That assumption no longer holds.
+
+hid_add_device() now calls ll_driver->parse() itself and then requires the
+descriptor to be present:
+
+	ret = hdev->ll_driver->parse(hdev);
+	if (ret)
+		return ret;
+	if (!hdev->dev_rdesc)
+		return -ENODEV;
+
+Since the callback never populates dev_rdesc, every virtual sub-device is
+rejected with -ENODEV, hid_add_device() fails, and neither the touch bar
+nor the ALS sub-device is ever created. This is why the touch bar has no
+driver bound on current kernels.
+
+Give the sub-device its own copy of the parent's report descriptor, which
+is what the ll_driver is emulating in the first place.
+
+Tested on a MacBookPro14,3 (T1, 05ac:8600) running 7.0.0-28-generic: with
+this applied, apple-ibridge creates the virtual 1d6b:0301 device and
+apple-touchbar binds to it.
+---
+ apple-ibridge.c | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/apple-ibridge.c b/apple-ibridge.c
+index b97fcf9..a19b7e1 100644
+--- a/apple-ibridge.c
++++ b/apple-ibridge.c
+@@ -288,8 +288,26 @@ static int appleib_ll_power(struct hid_device *hdev, int level)
+ 
+ static int appleib_ll_parse(struct hid_device *hdev)
+ {
+-	/* we've already called hid_parse_report() */
+-	return 0;
++	struct appleib_hid_dev_info *hdev_info = hdev->driver_data;
++	struct hid_device *parent;
++
++	/*
++	 * This used to just return 0, on the assumption that hid_parse_report()
++	 * had already been called for the sub-device. That is no longer true:
++	 * current kernels invoke ll_driver->parse() from within
++	 * hid_add_device() and then reject the device with -ENODEV if
++	 * dev_rdesc is still NULL. So give the virtual sub-device its own copy
++	 * of the parent's report descriptor here.
++	 */
++	if (!hdev_info || !hdev_info->hdev)
++		return -ENODEV;
++
++	parent = hdev_info->hdev;
++
++	if (!parent->dev_rdesc || !parent->dev_rsize)
++		return -ENODEV;
++
++	return hid_parse_report(hdev, parent->dev_rdesc, parent->dev_rsize);
+ }
+ 
+ static void appleib_ll_request(struct hid_device *hdev,
+-- 
+2.53.0
+

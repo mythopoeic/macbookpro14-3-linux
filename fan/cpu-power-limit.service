@@ -1,0 +1,19 @@
+[Unit]
+# RAPL limits are reset by firmware on every boot, so this has to reapply them.
+# See fan/README.md -- PL1 was found at 100 W on a 45 W part.
+Description=Cap CPU sustained package power (RAPL PL1)
+Documentation=file:///home/youruser/Projects/macbookpro14-3-ubuntu/fan/README.md
+After=multi-user.target
+ConditionPathExists=/sys/class/powercap/intel-rapl:0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=WATTS=40
+ExecStart=/usr/local/sbin/cpu-power-limit apply
+# Put the stock limit back if the unit is stopped, so disabling this really
+# does restore previous behaviour rather than leaving the cap in place.
+ExecStop=/usr/local/sbin/cpu-power-limit restore
+
+[Install]
+WantedBy=multi-user.target

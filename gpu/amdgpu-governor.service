@@ -1,0 +1,27 @@
+[Unit]
+# Clamps the discrete Radeon to its lowest DPM state while the desktop is idle.
+# See gpu/README.md -- amdgpu's own "auto" never downclocks on this machine.
+Description=Clamp the discrete Radeon to low DPM while idle
+Documentation=file:///home/youruser/Projects/macbookpro14-3-ubuntu/gpu/README.md
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/amdgpu-governor daemon
+# Belt and braces: the script restores 'auto' from its own EXIT trap, but if it
+# is killed uncatchably the GPU must not be left pinned at 214 MHz.
+ExecStopPost=/usr/local/sbin/amdgpu-governor auto
+Restart=on-failure
+RestartSec=10
+
+# It only ever writes two sysfs attributes under /sys/bus/pci/drivers/amdgpu.
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

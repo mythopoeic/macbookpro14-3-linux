@@ -1,0 +1,4 @@
+2026-08-01T20:45:09-04:00 hostname amdgpu-governor[97881]: started: poll=5s clamp_at_ema<=20% release>=60%x2 cooldown=30s guard=1
+2026-08-01T20:47:36-04:00 hostname amdgpu-governor[97881]: auto -> low  (clamp: ema=19% (raw 0%) sclk=7:907Mhz 11.07W)
+2026-08-01T20:48:51-04:00 hostname amdgpu-governor[97881]: low -> auto  (release: Steam/game running sclk=0:214Mhz 7.03W)
+2026-08-01T20:51:36-04:00 hostname amdgpu-governor[97881]: auto -> low  (clamp: ema=18% (raw 0%) sclk=7:907Mhz 11.05W)

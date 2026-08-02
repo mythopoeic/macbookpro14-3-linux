@@ -1,0 +1,16 @@
+[Unit]
+Description=Verify the dock's SuperSpeed half enumerated, recover the controller if not
+Documentation=man:udev(7)
+# Triggered by /etc/udev/rules.d/80-dock-superspeed.rules when the dock's
+# USB 2.0 hub appears on the PCH controller. If the matching SuperSpeed half
+# never shows up on the Thunderbolt controller, dock-xhci-recover resets it.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+# Give the SuperSpeed side time to enumerate on its own. A plug that recovers
+# by itself (address error -71 followed by a successful retry) takes about
+# three seconds, so twelve is generous without being a noticeable delay.
+ExecStartPre=/bin/sleep 12
+ExecStart=/usr/local/sbin/dock-xhci-recover

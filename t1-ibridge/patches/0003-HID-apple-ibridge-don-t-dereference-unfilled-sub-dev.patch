@@ -1,0 +1,113 @@
+From 35b7bf32012430a67ffd692ba6b673c7e8cc3c82 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Fri, 31 Jul 2026 22:48:43 -0400
+Subject: [PATCH 3/4] HID: apple-ibridge: don't dereference unfilled sub-device
+ slots
+
+appleib_add_device() only fills the sub_hdevs[] slots whose usages appear
+in that interface's report descriptor, and leaves the rest NULL. On an
+iBridge, interface 1.2 carries only the keyboard collection (0x00010006),
+so the ALS slot is always NULL there.
+
+appleib_forward_int_op() walks the whole array and reads sub_hdev->driver
+without checking, so every suspend and resume path faults. USB runtime
+autosuspend reaches it with no user action at all:
+
+  BUG: unable to handle page fault for address: 0000000000001c00
+  Oops: 0000 [#1] SMP PTI
+  Workqueue: pm pm_runtime_work
+  RIP: 0010:appleib_hid_suspend+0x1f/0x70 [apple_ibridge]
+   hid_suspend+0xd2/0x260 [usbhid]
+   pm_runtime_work+0x99/0xa0
+
+Skip NULL slots. The same array is walked in appleib_hid_raw_event(),
+which is guarded by sub_open[] but can still see a NULL entry, so check
+there too.
+
+Both functions can also run after appleib_remove_device() has cleared the
+driver data, so bail out when hid_get_drvdata() returns NULL.
+
+Finally, appleib_remove_device() left the pointers non-NULL after calling
+hid_destroy_device(). Anything that walks sub_hdevs[] afterwards then
+operates on freed devices, which shows up as a refcount underflow:
+
+  RIP: 0010:kobject_put+0x62/0xa0
+   hid_destroy_device+0x14/0x90 [hid]
+   appleib_hid_remove+0x2f/0x70 [apple_ibridge]
+
+Clear each slot as it is destroyed.
+
+Found on a MacBookPro14,3 (T1, 05ac:8600) running 7.0.0-28-generic, from
+the kdump vmcore of a crash 11.4 seconds after binding interface 1.3.
+---
+ apple-ibridge.c | 35 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 32 insertions(+), 3 deletions(-)
+
+diff --git a/apple-ibridge.c b/apple-ibridge.c
+index a19b7e1..a320d69 100644
+--- a/apple-ibridge.c
++++ b/apple-ibridge.c
+@@ -98,8 +98,13 @@ static int appleib_hid_raw_event(struct hid_device *hdev,
+ 	struct appleib_hid_dev_info *hdev_info = hid_get_drvdata(hdev);
+ 	int i;
+ 
++	/* may race with appleib_remove_device() clearing the driver data */
++	if (!hdev_info)
++		return 0;
++
+ 	for (i = 0; i < ARRAY_SIZE(hdev_info->sub_hdevs); i++) {
+-		if (READ_ONCE(hdev_info->sub_open[i]))
++		if (hdev_info->sub_hdevs[i] &&
++		    READ_ONCE(hdev_info->sub_open[i]))
+ 			hid_input_report(hdev_info->sub_hdevs[i], report->type,
+ 					 data, size, 0);
+ 	}
+@@ -175,9 +180,22 @@ static int appleib_forward_int_op(struct hid_device *hdev,
+ 	int rc;
+ 	int i;
+ 
++	/*
++	 * The suspend/resume paths can run after appleib_remove_device() has
++	 * cleared the driver data, so hdev_info may be NULL here.
++	 */
++	if (!hdev_info)
++		return 0;
++
+ 	for (i = 0; i < ARRAY_SIZE(hdev_info->sub_hdevs); i++) {
+ 		sub_hdev = hdev_info->sub_hdevs[i];
+-		if (sub_hdev->driver) {
++		/*
++		 * Only the slots whose usages appear in this interface's report
++		 * descriptor are filled in; the rest stay NULL. Interface 1.2 of
++		 * an iBridge carries just the keyboard collection, so the ALS
++		 * slot is always NULL there.
++		 */
++		if (sub_hdev && sub_hdev->driver) {
+ 			rc = forward(sub_hdev->driver, sub_hdev, args);
+ 			if (rc)
+ 				return rc;
+@@ -474,9 +492,20 @@ static void appleib_remove_device(struct hid_device *hdev)
+ 	struct appleib_hid_dev_info *hdev_info = hid_get_drvdata(hdev);
+ 	int i;
+ 
++	if (!hdev_info)
++		return;
++
++	/*
++	 * Clear each slot as it is destroyed. Leaving stale pointers behind
++	 * lets a second pass through here -- or anything else still walking
++	 * sub_hdevs[] -- call hid_destroy_device() on an already-freed device,
++	 * which shows up as a refcount underflow inside kobject_put().
++	 */
+ 	for (i = 0; i < ARRAY_SIZE(hdev_info->sub_hdevs); i++) {
+-		if (hdev_info->sub_hdevs[i])
++		if (hdev_info->sub_hdevs[i]) {
+ 			hid_destroy_device(hdev_info->sub_hdevs[i]);
++			hdev_info->sub_hdevs[i] = NULL;
++		}
+ 	}
+ 
+ 	hid_set_drvdata(hdev, NULL);
+-- 
+2.53.0
+

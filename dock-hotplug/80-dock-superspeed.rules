@@ -1,0 +1,14 @@
+# The dock's USB 2.0 half (VIA 2109:2813) enumerates on the PCH controller even
+# when its SuperSpeed half fails on the Thunderbolt controller, because Apple
+# routes the Type-C port's USB 2.0 pair to the PCH and its SuperSpeed lanes
+# through Thunderbolt. That makes the USB 2.0 hub's arrival a reliable "the dock
+# was just plugged in" signal, available in exactly the case where nothing on
+# the Thunderbolt side fires at all.
+#
+# dock-superspeed-check.service waits, then checks whether 17e9:6000 turned up,
+# and only resets the controller if it did not. A clean plug is a no-op.
+#
+# The dock contains two of these hubs, so this fires twice; the recovery script
+# takes a lock and exits early on the second run.
+
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="2109", ATTR{idProduct}=="2813", TAG+="systemd", ENV{SYSTEMD_WANTS}+="dock-superspeed-check.service"

@@ -1,0 +1,283 @@
+#!/bin/bash
+# Clamp the discrete Radeon to its lowest DPM state while the desktop is idle.
+#
+# Why this exists: on this machine amdgpu's own "auto" DPM never downclocks.
+# Measured over 90 s on an idle desktop with nothing running, the shader clock
+# sat at level 7 of 7 (907 MHz) in 45 of 45 samples while the GPU reported a
+# mean load of 5.5 %. That costs 10.4 W. Forcing the "low" performance level
+# pins it to 214 MHz and 7.0 W -- a 3.4 W saving, about a third of the GPU's
+# idle draw, for work it is not doing.
+#
+# This is NOT a fix for a broken driver and NOT a replacement for runtime PM.
+# The Radeon cannot runtime-suspend at all here (runtime_enabled=forbidden)
+# because it owns the internal panel and fb0; powering it off entirely needs a
+# vga_switcheroo mux change, which is a separate and much riskier problem. All
+# this does is stop it running at full clock while idle.
+#
+# power-profiles-daemon manages the CPU (CpuDriver: intel_pstate) and has no
+# GPU driver on this system, so nothing else writes these knobs. Keep it that
+# way -- two writers on one control is how the old fix-monitor-order.py ended up
+# fighting mutter.
+#
+# The device is resolved through the amdgpu driver link, never through
+# /sys/class/drm/cardN. Card numbering is not stable across boots on a machine
+# with four evdi cards, and this repo has already been bitten once by trusting
+# enumeration order over a stable identifier.
+
+set -u
+
+# Thresholds work on a smoothed average, not on raw samples. Measured on an
+# idle desktop, gpu_busy_percent spikes to 60-80% constantly -- evdi copies for
+# the two DisplayLink screens, terminal redraws, compositor work -- while the
+# 90 s mean is only 5.5%. A rule of "every sample must be below X" therefore
+# resets forever and never clamps at all. That was the first design and the
+# measurements killed it.
+# Release is deliberately far more eager than clamping. This machine is a
+# development box whose dGPU is used for compute, so the cost of releasing a
+# few seconds late is a compute kernel running at 214 MHz, while the cost of
+# releasing early is a few watts. Worst-case release latency is POLL seconds.
+POLL=${POLL:-3}                   # seconds between samples
+IDLE_EMA=${IDLE_EMA:-20}          # clamp when the smoothed busy% is <= this
+RELEASE_BUSY=${RELEASE_BUSY:-40}  # raw busy% that counts as real work
+RELEASE_SAMPLES=${RELEASE_SAMPLES:-1}  # consecutive such samples to release
+WARMUP=${WARMUP:-10}              # samples before the first clamp is allowed
+# Raised from 30 s after observing the daemon churn -- clamping during a brief
+# lull, then releasing seconds later, repeatedly. Each cycle is a wasted pair of
+# transitions, and on a machine that is rarely fully idle it biases toward
+# leaving the GPU clamped exactly when work is about to arrive.
+COOLDOWN=${COOLDOWN:-60}          # seconds after a release before re-clamping
+GUARD_STEAM=${GUARD_STEAM:-1}     # 1 = never clamp while Steam/a game is alive
+GUARD_COMPUTE=${GUARD_COMPUTE:-1} # 1 = never clamp while /dev/kfd is open
+HOLD_FILE=${HOLD_FILE:-/run/amdgpu-governor.hold}
+
+DRY_RUN=0
+DEV=""
+# Under --dry-run the real attribute never changes, so track what the level
+# *would* be. Without this, a dry run can only ever show the first transition
+# and the release path goes untested.
+DRY_LEVEL=""
+
+die() { echo "amdgpu-governor: $*" >&2; exit 1; }
+
+find_device() {
+    local d
+    for d in /sys/bus/pci/drivers/amdgpu/0000:*; do
+        [ -e "$d/power_dpm_force_performance_level" ] && { DEV="$d"; return 0; }
+    done
+    return 1
+}
+
+level_file() { echo "$DEV/power_dpm_force_performance_level"; }
+busy_file()  { echo "$DEV/gpu_busy_percent"; }
+sclk_file()  { echo "$DEV/pp_dpm_sclk"; }
+power_file() {
+    local f
+    for f in "$DEV"/hwmon/hwmon*/power1_input; do
+        [ -e "$f" ] && { echo "$f"; return; }
+    done
+}
+
+read_level() {
+    if [ "$DRY_RUN" = "1" ] && [ -n "$DRY_LEVEL" ]; then
+        echo "$DRY_LEVEL"
+    else
+        cat "$(level_file)" 2>/dev/null
+    fi
+}
+read_busy()  { cat "$(busy_file)"  2>/dev/null || echo 0; }
+read_sclk()  { grep -F '*' "$(sclk_file)" 2>/dev/null | tr -d ' *'; }
+read_watts() {
+    local f; f=$(power_file)
+    [ -n "$f" ] && awk '{printf "%.2f", $1/1000000}' "$f" 2>/dev/null || echo "n/a"
+}
+
+# A Steam client or a running game.
+#
+# Matches the resolved executable, never the command line. `pgrep -f` was the
+# first implementation and it was wrong: it matches argv, so any shell, editor
+# or grep whose command line merely mentions "steamapps" trips the guard and
+# silently disables the whole governor. Testing this found the governor
+# permanently guarded by its own test harness.
+#
+# /steamapps/ covers both the game and Proton, since Proton installs under
+# steamapps/common too. Reading other users' /proc/PID/exe needs root, which the
+# daemon has; run as an unprivileged user it still sees that user's own games,
+# which is the case that matters.
+# One `ls` and one `grep`, not one fork per process.
+#
+# The first version looped over /proc/[0-9]* calling $(readlink) on each -- a
+# fork per process, several hundred per poll. systemd reported the daemon
+# consuming 10min 9s of CPU over 47min wall, 21.6% of a core, permanently. On a
+# machine whose CPU reaches Tjmax under load and whose GPU sits at 49C, burning
+# a fifth of a core to save 3.4 W of GPU power is worse than doing nothing.
+# Matching on the exe symlink is still correct; only the loop was the problem.
+game_running() {
+    [ "$GUARD_STEAM" = "1" ] || return 1
+    ls -l /proc/[0-9]*/exe 2>/dev/null |
+        grep -qE '> .*/steamapps/|> .*/steam$|> .*/steamwebhelper$'
+}
+
+# A GPU compute client. /dev/kfd is AMD's compute device: ROCm, HIP and any
+# OpenCL stack layered on them open it, and nothing else does. That makes it a
+# definitive signal in a way process names never are -- the same lesson the
+# game guard learned when `pgrep -f` matched its own test harness.
+#
+# This matters more than the game guard on this machine. It is a development
+# box, and a compute kernel throttled to 214 MHz is a much worse outcome than a
+# game stuttering: a game is obvious, a slow kernel just looks like slow code.
+#
+# Vulkan and rusticl compute go through the render node rather than /dev/kfd,
+# and are caught by the busy% release path instead.
+# KFD keeps its own per-process accounting under sysfs, one directory per
+# client, populated from the moment /dev/kfd is opened. Testing it is a bash
+# glob: no forks, no /proc walk, 0.045 ms.
+#
+# `fuser /dev/kfd` was the first implementation and cost 107 ms per call --
+# 3.6% of a core on its own at a 3 s poll -- because it walks every process's
+# file descriptors. Falls back to it only if the sysfs interface is missing,
+# and that decision is made once at startup rather than every poll.
+KFD_PROC=/sys/class/kfd/kfd/proc
+compute_running() {
+    [ "$GUARD_COMPUTE" = "1" ] || return 1
+    if [ -d "$KFD_PROC" ]; then
+        local d
+        for d in "$KFD_PROC"/*/; do
+            [ -d "$d" ] && return 0
+        done
+        return 1
+    fi
+    [ -e /dev/kfd ] || return 1
+    fuser /dev/kfd >/dev/null 2>&1
+}
+
+# An explicit user hold, for a work session where the clamp should stay out of
+# the way regardless of what the heuristics think.
+hold_active() { [ -e "$HOLD_FILE" ]; }
+
+# ctx must carry the reading that actually drove the decision. Re-sampling
+# busy% here would log a fresh value unrelated to why the transition happened,
+# which reads as "clamped at 81% load" in the journal and is simply false.
+set_level() {
+    local want=$1 ctx=${2:-} cur
+    cur=$(read_level)
+    [ "$cur" = "$want" ] && return 0
+    [ -n "$ctx" ] || ctx="busy=$(read_busy)%"
+    ctx="$ctx sclk=$(read_sclk) $(read_watts)W"
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "would set $cur -> $want  ($ctx)"
+        DRY_LEVEL="$want"
+        return 0
+    fi
+    echo "$want" > "$(level_file)" 2>/dev/null ||
+        { echo "failed to write $want (need root?)" >&2; return 1; }
+    echo "$cur -> $want  ($ctx)"
+}
+
+# Never leave the GPU clamped because the daemon died.
+restore() { [ "$DRY_RUN" = "1" ] || echo auto > "$(level_file)" 2>/dev/null; }
+
+cmd_status() {
+    printf 'device        %s\n' "$DEV"
+    printf 'level         %s\n' "$(read_level)"
+    printf 'busy          %s%%\n' "$(read_busy)"
+    printf 'sclk          %s\n' "$(read_sclk)"
+    printf 'power         %s W\n' "$(read_watts)"
+    printf 'game guard    %s\n' \
+        "$(game_running && echo 'TRIPPED (would not clamp)' || echo 'clear')"
+    printf 'compute guard %s\n' \
+        "$(compute_running && echo 'TRIPPED (/dev/kfd open)' || echo 'clear')"
+    printf 'user hold     %s\n' \
+        "$(hold_active && echo "ACTIVE ($HOLD_FILE)" || echo 'off')"
+    printf 'release lat.  %ss worst case\n' "$((POLL * RELEASE_SAMPLES))"
+}
+
+cmd_daemon() {
+    local clamped=0 last_release=0 samples=0 hot=0 ema=0 busy now guard
+    # Resolve the hot-path file once and read it with the `read` builtin rather
+    # than $(cat ...). Every command substitution in a 3-second loop is a fork,
+    # and forks are the entire reason the first version cost 21.6% of a core.
+    local BUSY_F; BUSY_F=$(busy_file)
+    trap 'restore; exit 0' INT TERM
+    trap restore EXIT
+    echo "started: poll=${POLL}s clamp_at_ema<=${IDLE_EMA}%" \
+         "release>=${RELEASE_BUSY}%x${RELEASE_SAMPLES} cooldown=${COOLDOWN}s" \
+         "guard=${GUARD_STEAM}"
+    set_level auto "startup"
+    while :; do
+        read -r busy < "$BUSY_F" 2>/dev/null || busy=0
+        [ -n "$busy" ] || busy=0
+        # $EPOCHSECONDS is a bash builtin; `date` would be another fork.
+        now=${EPOCHSECONDS:-0}
+        samples=$((samples + 1))
+        # Integer EMA, alpha = 1/8. Cheap, no array bookkeeping in bash.
+        ema=$(( (ema * 7 + busy) / 8 ))
+
+        # The guards only affect two decisions: releasing while clamped, and
+        # blocking a clamp that is about to happen. When the GPU is unclamped
+        # and busy, neither applies, so skip them entirely -- that is precisely
+        # the heavy-use case where wasting CPU would matter most.
+        guard=""
+        if [ "$clamped" = "1" ] || [ "$ema" -le "$IDLE_EMA" ]; then
+            if hold_active;      then guard="user hold ($HOLD_FILE)"
+            elif compute_running; then guard="GPU compute (/dev/kfd open)"
+            elif game_running;    then guard="Steam/game running"
+            fi
+        fi
+
+        if [ -n "$guard" ]; then
+            hot=0
+            if [ "$clamped" = "1" ]; then
+                set_level auto "release: $guard" &&
+                    clamped=0 && last_release=$now
+            fi
+        elif [ "$busy" -ge "$RELEASE_BUSY" ] 2>/dev/null; then
+            hot=$((hot + 1))
+            # Sustained real work, not a single compositor blip. The game guard
+            # above already covers the case that actually matters for frames.
+            if [ "$clamped" = "1" ] && [ "$hot" -ge "$RELEASE_SAMPLES" ]; then
+                set_level auto "release: busy=${busy}% x${hot} (ema=${ema}%)" &&
+                    clamped=0 && last_release=$now
+            fi
+        else
+            hot=0
+            if [ "$clamped" = "0" ] && [ "$samples" -ge "$WARMUP" ] &&
+               [ "$ema" -le "$IDLE_EMA" ] &&
+               [ $((now - last_release)) -ge "$COOLDOWN" ]; then
+                set_level low "clamp: ema=${ema}% (raw ${busy}%)" && clamped=1
+            fi
+        fi
+        sleep "$POLL"
+    done
+}
+
+main() {
+    local cmd=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run) DRY_RUN=1 ;;
+            daemon|status|low|auto|hold|unhold) cmd="$1" ;;
+            -h|--help)
+                echo "usage: amdgpu-governor [--dry-run] {daemon|status|low|auto|hold|unhold}"
+                echo "  hold   - stop clamping until 'unhold' (for a work session)"
+                echo "  unhold - resume normal governing"
+                exit 0 ;;
+            *) die "unknown argument: $1" ;;
+        esac
+        shift
+    done
+    find_device || die "no amdgpu device found under /sys/bus/pci/drivers/amdgpu"
+    case "${cmd:-status}" in
+        daemon) cmd_daemon ;;
+        status) cmd_status ;;
+        low)    set_level low ;;
+        auto)   set_level auto ;;
+        hold)   touch "$HOLD_FILE" 2>/dev/null ||
+                    die "cannot create $HOLD_FILE (need root?)"
+                set_level auto "user hold"
+                echo "holding: clamping disabled until 'amdgpu-governor unhold'" ;;
+        unhold) rm -f "$HOLD_FILE" 2>/dev/null
+                echo "hold released: normal governing resumes within ${POLL}s" ;;
+    esac
+}
+
+main "$@"

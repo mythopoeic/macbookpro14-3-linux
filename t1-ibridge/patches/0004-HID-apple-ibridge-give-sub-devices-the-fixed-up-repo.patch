@@ -1,0 +1,58 @@
+From 4aae02fe520a2e04f07c2f290361755e094d64f8 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Fri, 31 Jul 2026 22:49:02 -0400
+Subject: [PATCH 4/4] HID: apple-ibridge: give sub-devices the fixed-up report
+ descriptor
+
+appleib_ll_parse() copies the parent's descriptor into each virtual
+sub-device, but takes it from dev_rdesc. hid_open_report() stores the
+descriptor as it came off the wire in dev_rdesc, runs report_fixup() on a
+copy, and stores that result in rdesc.
+
+appleib_report_fixup() exists precisely to rewrite two fields the iBridge
+declares with a report size of 64 bits, which HID 1.11 section 8.4 does
+not allow ("an item field cannot span more than 4 bytes in a report") and
+which makes hid_field_extract() complain. Copying dev_rdesc hands every
+sub-device the unfixed descriptor and reintroduces those fields.
+
+Copy rdesc/rsize instead.
+
+Fixes: the descriptor copy added by "HID: apple-ibridge: populate
+dev_rdesc in the ll_driver parse callback".
+---
+ apple-ibridge.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/apple-ibridge.c b/apple-ibridge.c
+index a320d69..073f030 100644
+--- a/apple-ibridge.c
++++ b/apple-ibridge.c
+@@ -316,16 +316,23 @@ static int appleib_ll_parse(struct hid_device *hdev)
+ 	 * hid_add_device() and then reject the device with -ENODEV if
+ 	 * dev_rdesc is still NULL. So give the virtual sub-device its own copy
+ 	 * of the parent's report descriptor here.
++	 *
++	 * Use rdesc, not dev_rdesc. hid_open_report() keeps the descriptor as
++	 * it came off the wire in dev_rdesc and the report_fixup()'d version in
++	 * rdesc. appleib_report_fixup() exists to split two 64-bit fields that
++	 * HID 1.11 section 8.4 forbids and that hid_field_extract() complains
++	 * about, so handing sub-devices dev_rdesc would reintroduce exactly the
++	 * fields the fixup was written to remove.
+ 	 */
+ 	if (!hdev_info || !hdev_info->hdev)
+ 		return -ENODEV;
+ 
+ 	parent = hdev_info->hdev;
+ 
+-	if (!parent->dev_rdesc || !parent->dev_rsize)
++	if (!parent->rdesc || !parent->rsize)
+ 		return -ENODEV;
+ 
+-	return hid_parse_report(hdev, parent->dev_rdesc, parent->dev_rsize);
++	return hid_parse_report(hdev, parent->rdesc, parent->rsize);
+ }
+ 
+ static void appleib_ll_request(struct hid_device *hdev,
+-- 
+2.53.0
+

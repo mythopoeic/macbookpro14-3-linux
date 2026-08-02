@@ -1,0 +1,110 @@
+From d03a8bf18ef8d6540aae1b999df6f51ae81d33e6 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Fri, 31 Jul 2026 19:02:16 -0400
+Subject: [PATCH 1/4] HID: apple-ibridge: fix out-of-bounds write when creating
+ sub-devices
+
+appleib_add_device() iterates over hdev->maxcollection but stores each
+result in hdev_info->sub_hdevs[i], an array sized
+ARRAY_SIZE(appleib_sub_hid_ids), which is 2. On a real iBridge the
+descriptor has more collections than that, so the loop writes past the end
+of sub_hdevs and corrupts the sub_open[] array that follows it in the
+struct. UBSAN reports this as:
+
+  UBSAN: invalid-load in apple-ibridge.c:102
+  load of value 122 is not a valid value for type '_Bool'
+
+The indexing is wrong in a second way: appleib_usage_map maps four usages
+onto only two sub-devices, three of them to the touch bar. Using the
+collection index therefore also tries to create the same virtual device
+several times, once per matching collection.
+
+Index by sub-device instead, derived from the matched dev_id, and skip a
+sub-device that an earlier collection already created.
+
+While here, fix the error path. After
+
+	while (i-- > 0)
+		hid_destroy_device(hdev_info->sub_hdevs[i]);
+	return (void *)hdev_info->sub_hdevs[i];
+
+the loop always leaves i == -1, so the return reads sub_hdevs[-1]:
+
+  UBSAN: array-index-out-of-bounds in apple-ibridge.c:416
+  index -1 is out of range for type 'hid_device *[2]'
+
+Save the error pointer first, clear the slot, and destroy whatever was
+successfully created by walking the array directly. Also log the failing
+sub-device index, usage and error code, which is what made the next bug in
+this path diagnosable at all.
+---
+ apple-ibridge.c | 44 +++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 37 insertions(+), 7 deletions(-)
+
+diff --git a/apple-ibridge.c b/apple-ibridge.c
+index 79bba60..b97fcf9 100644
+--- a/apple-ibridge.c
++++ b/apple-ibridge.c
+@@ -392,7 +392,7 @@ static struct appleib_hid_dev_info *appleib_add_device(struct hid_device *hdev)
+ 	struct appleib_hid_dev_info *hdev_info;
+ 	struct hid_device_id *dev_id;
+ 	unsigned int usage;
+-	int i;
++	int i, idx;
+ 
+ 	hdev_info = devm_kzalloc(&hdev->dev, sizeof(*hdev_info), GFP_KERNEL);
+ 	if (!hdev_info)
+@@ -407,14 +407,44 @@ static struct appleib_hid_dev_info *appleib_add_device(struct hid_device *hdev)
+ 		if (!dev_id) {
+ 			hid_warn(hdev, "Unknown collection encountered with usage %x\n",
+ 				 usage);
+-		} else {
+-			hdev_info->sub_hdevs[i] = appleib_add_sub_dev(hdev_info, dev_id);
++			continue;
++		}
+ 
+-			if (IS_ERR(hdev_info->sub_hdevs[i])) {
+-				while (i-- > 0)
+-					hid_destroy_device(hdev_info->sub_hdevs[i]);
+-				return (void *)hdev_info->sub_hdevs[i];
++		/*
++		 * Index sub_hdevs by sub-device, not by collection. Several
++		 * collections map to the same virtual device (three of the four
++		 * entries in appleib_usage_map point at the touch bar), and
++		 * hdev->maxcollection can be far larger than the array, so using
++		 * the collection index both created duplicate sub-devices and
++		 * wrote past the end of sub_hdevs into sub_open.
++		 */
++		idx = dev_id - appleib_sub_hid_ids;
++		if (WARN_ON(idx < 0 || idx >= (int)ARRAY_SIZE(hdev_info->sub_hdevs)))
++			continue;
++
++		/* already created from an earlier collection */
++		if (hdev_info->sub_hdevs[idx])
++			continue;
++
++		hdev_info->sub_hdevs[idx] = appleib_add_sub_dev(hdev_info, dev_id);
++
++		if (IS_ERR(hdev_info->sub_hdevs[idx])) {
++			void *err = hdev_info->sub_hdevs[idx];
++			int j;
++
++			hid_err(hdev,
++				"ib: failed to add sub-device %d for usage %x: %ld\n",
++				idx, usage, PTR_ERR(err));
++
++			hdev_info->sub_hdevs[idx] = NULL;
++			for (j = 0; j < ARRAY_SIZE(hdev_info->sub_hdevs); j++) {
++				if (hdev_info->sub_hdevs[j]) {
++					hid_destroy_device(hdev_info->sub_hdevs[j]);
++					hdev_info->sub_hdevs[j] = NULL;
++				}
+ 			}
++
++			return err;
+ 		}
+ 	}
+ 
+-- 
+2.53.0
+

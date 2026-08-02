@@ -1,0 +1,22 @@
+[Unit]
+Description=Restore the GNOME monitor layout for this dock and monitor combination
+Documentation=file:/home/youruser/Projects/macbookpro14-3-ubuntu/dock-hotplug/README.md
+# A *user* unit: it talks to mutter over the session bus, so it has to run
+# inside the graphical session and cannot be a system service.
+#
+# Replaces monitor-order.service, which ran ~/.local/bin/watch-monitor-order.py
+# and hardcoded primary = index 0 = the built-in panel — actively moving the
+# primary display back to the laptop screen on every monitor change.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/dock-monitor-profiles daemon
+# The daemon retries its first mutter call for ~30s, so starting before
+# gnome-shell has taken the bus name is not a failure.
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

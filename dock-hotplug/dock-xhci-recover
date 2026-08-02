@@ -1,0 +1,190 @@
+#!/bin/bash
+# Recover the Thunderbolt USB controller when the dock's SuperSpeed half fails
+# to enumerate. Installed at /usr/local/sbin/dock-xhci-recover, run as root by
+# dock-superspeed-check.service (and by ~/.local/bin/recover-displays by hand).
+#
+# Why this exists: the dock presents two independent halves over one cable, and
+# Apple routes them to two different host controllers.
+#
+#   USB 2.0 hub  2109:2813 -> PCH xHCI          0000:00:14.0  (bus 1)
+#   USB 3.0 hub  2109:0813 -> Alpine Ridge xHCI 0000:7d:00.0  (bus 6)
+#   DisplayLink  17e9:6000 sits behind the USB 3.0 half.
+#
+# The Type-C port's USB 2.0 pair goes to the PCH and its SuperSpeed lanes go
+# through Thunderbolt, so the PCH half can enumerate perfectly while the Alpine
+# Ridge half never appears at all. Keyboard and mouse work; the displays do not.
+# That is not a speed negotiation failing, it is one of two controllers failing.
+#
+# Once 17e9:6000 appears, DisplayLink's own 99-displaylink.rules starts
+# displaylink-driver.service, and the session's monitor-order watcher fixes the
+# layout on MonitorsChanged. Nothing here needs to do either of those.
+
+set -uo pipefail
+
+CONTROLLER="0000:7d:00.0"
+PCI_DEV="/sys/bus/pci/devices/$CONTROLLER"
+XHCI_DRIVER="/sys/bus/pci/drivers/xhci_hcd"
+DOCK_VENDOR="17e9"
+DOCK_PRODUCT="6000"
+
+LOCK="/run/dock-xhci-recover.lock"
+STAMP="/run/dock-xhci-recover.stamp"
+MIN_INTERVAL=90        # seconds; stops the two dock hubs double-triggering
+STAGE1_WAIT=20         # seconds to wait for the dock after a driver rebind
+STAGE2_WAIT=30         # seconds to wait for the dock after a PCI rescan
+
+log() {
+    echo "dock-xhci-recover: $*"
+}
+
+dock_present() {
+    local dev
+    for dev in /sys/bus/usb/devices/*/; do
+        [[ -r "$dev/idVendor" && -r "$dev/idProduct" ]] || continue
+        if [[ "$(<"$dev/idVendor")" == "$DOCK_VENDOR" &&
+              "$(<"$dev/idProduct")" == "$DOCK_PRODUCT" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+wait_for_dock() {
+    local timeout=$1 elapsed=0
+
+    while (( elapsed < timeout )); do
+        if dock_present; then
+            return 0
+        fi
+        sleep 1
+        (( elapsed++ ))
+    done
+
+    return 1
+}
+
+apply_power_settings() {
+    # /etc/tmpfiles.d/displaylink-usb-power.conf only applies these at boot.
+    # Re-probing the controller creates a fresh device object with the kernel
+    # defaults back, so they have to be reapplied here or the controller can
+    # drop into a power state the dock cannot wake it from.
+    if [[ -w "$PCI_DEV/power/control" ]]; then
+        echo on > "$PCI_DEV/power/control"
+    fi
+
+    if [[ -w "$PCI_DEV/d3cold_allowed" ]]; then
+        echo 0 > "$PCI_DEV/d3cold_allowed"
+    fi
+
+    return 0
+}
+
+stage1_rebind() {
+    log "stage 1: unbinding and rebinding xhci_hcd on $CONTROLLER"
+
+    apply_power_settings
+
+    if [[ -e "$XHCI_DRIVER/$CONTROLLER" ]]; then
+        if ! echo "$CONTROLLER" > "$XHCI_DRIVER/unbind" 2>/dev/null; then
+            log "stage 1: unbind failed"
+            return 1
+        fi
+        sleep 3
+    else
+        log "stage 1: controller was not bound to xhci_hcd"
+    fi
+
+    if ! echo "$CONTROLLER" > "$XHCI_DRIVER/bind" 2>/dev/null; then
+        log "stage 1: bind failed"
+        return 1
+    fi
+
+    apply_power_settings
+    return 0
+}
+
+stage2_pci_rescan() {
+    log "stage 2: removing $CONTROLLER from PCI and rescanning"
+
+    if ! echo 1 > "$PCI_DEV/remove" 2>/dev/null; then
+        log "stage 2: PCI remove failed"
+        return 1
+    fi
+
+    sleep 3
+    echo 1 > /sys/bus/pci/rescan
+
+    local elapsed=0
+    while (( elapsed < 15 )); do
+        [[ -e "$PCI_DEV" ]] && break
+        sleep 1
+        (( elapsed++ ))
+    done
+
+    if [[ ! -e "$PCI_DEV" ]]; then
+        log "stage 2: controller did not come back after the rescan"
+        log "stage 2: a reboot will restore it"
+        return 1
+    fi
+
+    apply_power_settings
+    return 0
+}
+
+main() {
+    # Serialise: the dock has two USB 2.0 hubs, so udev fires the trigger twice.
+    exec 9>"$LOCK"
+    if ! flock -n 9; then
+        log "another recovery is already running, nothing to do"
+        exit 0
+    fi
+
+    if dock_present; then
+        log "dock is already enumerated, nothing to do"
+        exit 0
+    fi
+
+    if [[ ! -e "$PCI_DEV" ]]; then
+        log "controller $CONTROLLER not found, cannot recover"
+        exit 1
+    fi
+
+    # Back off unless invoked by hand, so a dock that is genuinely broken
+    # cannot drive this in a loop.
+    local now last
+    now=$(date +%s)
+
+    if [[ "${DOCK_RECOVER_FORCE:-0}" != "1" && -f "$STAMP" ]]; then
+        last=$(<"$STAMP")
+        if (( now - last < MIN_INTERVAL )); then
+            log "last recovery was $(( now - last ))s ago, backing off"
+            exit 0
+        fi
+    fi
+
+    echo "$now" > "$STAMP"
+
+    log "dock's SuperSpeed half did not enumerate, starting recovery"
+
+    if stage1_rebind && wait_for_dock "$STAGE1_WAIT"; then
+        log "dock enumerated after stage 1"
+        exit 0
+    fi
+
+    log "dock still absent after stage 1"
+
+    if [[ "${DOCK_RECOVER_ESCALATE:-1}" != "1" ]]; then
+        log "escalation disabled, giving up"
+        exit 1
+    fi
+
+    if stage2_pci_rescan && wait_for_dock "$STAGE2_WAIT"; then
+        log "dock enumerated after stage 2"
+        exit 0
+    fi
+
+    log "dock did not return; unplug and replug it, or power-cycle the dock"
+    exit 1
+}
+
+main "$@"

@@ -1,0 +1,47 @@
+=== BEFORE ===
+0:DIS:+:Pwr:0000:01:00.0
+1:IGD: :Pwr:0000:00:02.0
+2:DIS-Audio: :DynOff:0000:01:00.1
+    card0-DP-5         disconnected
+    card0-DP-6         disconnected
+    card0-HDMI-A-1     disconnected
+    card0-HDMI-A-2     disconnected
+    card1-DP-1         disconnected
+    card1-DP-2         disconnected
+    card1-DP-3         disconnected
+    card1-DP-4         disconnected
+    card1-eDP-1        connected
+  fb0 = amdgpudrmfb
+backstop armed: independent revert in 75s
+
+=== SWITCHING TO IGD ===
+0:DIS:+:Pwr:0000:01:00.0
+1:IGD: :Pwr:0000:00:02.0
+2:DIS-Audio: :DynOff:0000:01:00.1
+    card0-DP-5         disconnected
+    card0-DP-6         disconnected
+    card0-HDMI-A-1     disconnected
+    card0-HDMI-A-2     disconnected
+    card1-DP-1         disconnected
+    card1-DP-2         disconnected
+    card1-DP-3         disconnected
+    card1-DP-4         disconnected
+    card1-eDP-1        connected
+  fb0 = amdgpudrmfb
+
+=== waiting up to 45s (touch /run/mux-ok or /run/mux-fail to end early) ===
+
+=== AFTER (pre-revert) ===
+    card0-DP-5         disconnected
+    card0-DP-6         disconnected
+    card0-HDMI-A-1     disconnected
+    card0-HDMI-A-2     disconnected
+    card1-DP-1         disconnected
+    card1-DP-2         disconnected
+    card1-DP-3         disconnected
+    card1-DP-4         disconnected
+    card1-eDP-1        connected
+--- REVERTED ---
+0:DIS:+:Pwr:0000:01:00.0
+1:IGD: :Pwr:0000:00:02.0
+2:DIS-Audio: :DynOff:0000:01:00.1

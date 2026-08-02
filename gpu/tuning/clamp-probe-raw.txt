@@ -1,0 +1,25 @@
+=== 1. vga_switcheroo clients (read-only) ===
+0:DIS:+:Pwr:0000:01:00.0
+1:IGD: :Pwr:0000:00:02.0
+2:DIS-Audio: :DynOff:0000:01:00.1
+
+=== 2. baseline (current setting: auto) ===
+    9.03 W   busy=28%   4:671Mhz
+    7.01 W   busy=0%    0:214Mhz
+    7.10 W   busy=0%    1:320Mhz
+    7.01 W   busy=0%    0:214Mhz
+    7.01 W   busy=0%    0:214Mhz
+
+=== 3. clamped to 'low' ===
+   level now: low
+    7.01 W   busy=0%    0:214Mhz
+    7.01 W   busy=0%    0:214Mhz
+    7.01 W   busy=0%    0:214Mhz
+    7.01 W   busy=0%    0:214Mhz
+    7.01 W   busy=0%    0:214Mhz
+    7.01 W   busy=0%    0:214Mhz
+    7.01 W   busy=0%    0:214Mhz
+
+=== 4. restoring ===
+restored power_dpm_force_performance_level = auto
+restored power_dpm_force_performance_level = auto

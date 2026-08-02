@@ -1,0 +1,85 @@
+#!/bin/bash
+# Cap the CPU package sustained power limit (RAPL PL1).
+#
+# Why this exists: this machine reports no meaningful sustained power cap. RAPL
+# on an i7-7700HQ, a 45 W part, was found configured as:
+#
+#     constraint_0 (long_term)  = 100 W
+#     constraint_1 (short_term) = 125 W
+#
+# so the CPU may generate heat indefinitely at more than twice its design TDP.
+# Capping PL1 to 40 W bounds *sustained* heat while leaving the short-term
+# burst limit untouched, which is the point: interactive work is bursty and
+# rides PL2, so it should feel unchanged. Only long all-core loads -- compiles,
+# games, video encodes -- are limited, and those are exactly the workloads that
+# were cooking the machine.
+#
+# This is a longevity measure, not a performance one. It trades a bounded
+# amount of sustained throughput for lower steady-state temperature.
+#
+# RAPL limits do not survive a reboot, hence the accompanying service. Firmware
+# can also lock these registers, in which case the write is silently ignored --
+# so this always reads the value back and reports what actually took effect
+# rather than assuming the write worked.
+
+set -u
+WATTS=${WATTS:-40}
+RAPL=/sys/class/powercap/intel-rapl:0
+
+die() { echo "cpu-power-limit: $*" >&2; exit 1; }
+
+[ -d "$RAPL" ] || die "no $RAPL (intel_rapl_msr loaded?)"
+
+pl() {  # pl <constraint-index> -> watts
+    local v
+    v=$(cat "$RAPL/constraint_${1}_power_limit_uw" 2>/dev/null) || return 1
+    echo $((v / 1000000))
+}
+
+cmd_status() {
+    printf 'domain        %s\n' "$(cat "$RAPL/name" 2>/dev/null)"
+    printf 'PL1 long_term  %s W\n' "$(pl 0)"
+    printf 'PL2 short_term %s W\n' "$(pl 1)"
+    printf 'max allowed    %s W\n' \
+        "$(( $(cat "$RAPL/constraint_0_max_power_uw" 2>/dev/null || echo 0) / 1000000 ))"
+}
+
+cmd_set() {
+    local want=$1 before after
+    before=$(pl 0)
+    echo "$((want * 1000000))" > "$RAPL/constraint_0_power_limit_uw" 2>/dev/null ||
+        die "write rejected (firmware may have locked RAPL)"
+    after=$(pl 0)
+    if [ "$after" = "$want" ]; then
+        echo "PL1 ${before}W -> ${after}W (PL2 unchanged at $(pl 1)W)"
+    else
+        die "write accepted but PL1 reads ${after}W, not ${want}W -- firmware locked"
+    fi
+}
+
+# The cap exists for longevity, but this is also a development machine and a
+# long compile is exactly the sustained all-core load the cap bounds. `boost`
+# lifts PL1 for one piece of work; `apply` puts it back. Symmetric with
+# `amdgpu-governor hold`, and for the same reason: a thermal measure that cannot
+# be stood down temporarily just gets disabled permanently.
+#
+# Deliberately not automatic. Detecting "a build" reliably is guesswork, and a
+# wrong guess here means either a throttled build or an uncapped machine -- the
+# same trap the GPU governor's process-name matching fell into.
+cmd_boost() {
+    cmd_set 100
+    echo "PL1 lifted for this session. Restore with: cpu-power-limit apply"
+    echo "It also returns on the next boot, since the service reapplies it."
+}
+
+case "${1:-status}" in
+    status)  cmd_status ;;
+    apply)   cmd_set "$WATTS" ;;
+    boost)   cmd_boost ;;
+    restore) cmd_set 100 ;;
+    [0-9]*)  cmd_set "$1" ;;
+    *) echo "usage: cpu-power-limit [status|apply|boost|restore|<watts>]" >&2
+       echo "  apply  - cap PL1 at \${WATTS:-40} W (what the service runs)"
+       echo "  boost  - lift the cap for a long build; 'apply' restores it"
+       exit 1 ;;
+esac

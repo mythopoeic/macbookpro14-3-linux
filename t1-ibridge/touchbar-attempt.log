@@ -1,0 +1,96 @@
+=== Touch Bar attempt: Fri Jul 31 06:47:17 PM EDT 2026 ===
+boot started: 2026-07-31 18:44:01
+
+guard: boot is clean, no prior module activity
+NOTE: the DisplayLink dock appears to be attached. The thunderbolt
+      driver on this machine oopsed at boot earlier today. Consider
+      unplugging the dock before proceeding.
+iBridge: Bus 001 Device 002: ID 05ac:8600 Apple, Inc. iBridge
+camera : /dev/video0 /dev/video1 /dev/video2 /dev/video3 
+als    : 21
+
+syncing filesystems before we touch anything...
+synced
+
+STEP 1: loading apple-ibridge (patched)
+STEP 1: insmod returned, still alive
+
+STEP 2: checking for UBSAN / oops
+  problem lines found: 0
+  clean so far
+
+STEP 3: virtual sub-devices created?
+  0003:045E:074B.0003  driver=hid-generic
+  0003:045E:074B.0004  driver=hid-generic
+  0003:05AC:8600.0001  driver=apple-ibridge-hid
+  0003:05AC:8600.0002  driver=hid-sensor-hub
+  0003:1532:008A.0008  driver=hid-generic
+  0003:1532:008A.0009  driver=hid-generic
+  0003:1532:008A.000A  driver=hid-generic
+  0003:1D6B:0301.000B  driver=hid-generic
+
+virtual touch bar device present
+
+STEP 4: loading apple-touchbar
+STEP 4: insmod returned, still alive
+
+=== FINAL STATE ===
+  0003:045E:074B.0003  driver=hid-generic
+  0003:045E:074B.0004  driver=hid-generic
+  0003:05AC:8600.0001  driver=apple-ibridge-hid
+  0003:05AC:8600.0002  driver=hid-sensor-hub
+  0003:1532:008A.0008  driver=hid-generic
+  0003:1532:008A.0009  driver=hid-generic
+  0003:1532:008A.000A  driver=hid-generic
+  0003:1D6B:0301.000B  driver=apple-touchbar
+camera : /dev/video0 /dev/video1 /dev/video2 /dev/video3 
+als    : 21
+
+Jul 31 18:47:17 hostname kernel: apple-ibridge-hid 0003:05AC:8600.0001: : USB HID v1.01 Keyboard [Apple Inc. iBridge] on usb-0000:00:14.0-3/input2
+Jul 31 18:47:17 hostname kernel: input: iBridge Virtual HID 0003:05AC:8600.0001/1d6b:0301 as /devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.2/0003:05AC:8600.0001/0003:1D6B:0301.000B/input/input29
+Jul 31 18:47:17 hostname kernel: hid-generic 0003:1D6B:0301.000B: input,hidraw0: USB HID v0.00 Keyboard [iBridge Virtual HID 0003:05AC:8600.0001/1d6b:0301] on 
+Jul 31 18:47:22 hostname kernel: input: iBridge Virtual HID 0003:05AC:8600.0001/1d6b:0301 as /devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.2/0003:05AC:8600.0001/0003:1D6B:0301.000B/input/input30
+Jul 31 18:47:22 hostname kernel: apple-touchbar 0003:1D6B:0301.000B: input: USB HID v0.00 Keyboard [iBridge Virtual HID 0003:05AC:8600.0001/1d6b:0301] on 
+
+============================================
+  LOOK AT THE TOUCH BAR. Try holding Fn.
+  To undo: REBOOT. Do not run rmmod.
+============================================
+
+=== binding interface 1.3: Fri Jul 31 06:50:58 PM EDT 2026 ===
+guards passed (modules loaded, no prior UBSAN)
+current driver on 0003:05AC:8600.0002: hid-sensor-hub
+als before: 20
+
+synced
+unbinding from hid-sensor-hub...
+unbound, still alive
+binding to apple-ibridge-hid...
+bind returned, still alive
+
+problem lines since bind: 0
+
+=== HID devices now ===
+  0003:05AC:8600.0001  driver=apple-ibridge-hid  rdesc=83B
+  0003:05AC:8600.0002  driver=apple-ibridge-hid  rdesc=634B
+  0003:1D6B:0301.000B  driver=apple-touchbar  rdesc=83B
+  0003:1D6B:0301.000D  driver=hid-sensor-hub  rdesc=634B
+  0003:1D6B:0302.000C  driver=hid-sensor-hub  rdesc=634B
+
+als after : 21
+camera    : /dev/video0 /dev/video1 /dev/video2 /dev/video3 
+
+=== kernel messages ===
+Jul 31 18:51:00 hostname kernel: apple-ibridge-hid 0003:05AC:8600.0002: : USB HID v1.01 Device [Apple Inc. iBridge] on usb-0000:00:14.0-3/input3
+Jul 31 18:51:00 hostname kernel: hid-sensor-hub 0003:1D6B:0302.000C: hidraw0: USB HID v0.00 Device [iBridge Virtual HID 0003:05AC:8600.0002/1d6b:0302] on 
+Jul 31 18:51:00 hostname kernel: apple-ibridge-hid 0003:05AC:8600.0002: Unknown collection encountered with usage 200316
+Jul 31 18:51:00 hostname kernel: apple-ibridge-hid 0003:05AC:8600.0002: Unknown collection encountered with usage 200309
+Jul 31 18:51:00 hostname kernel: apple-ibridge-hid 0003:05AC:8600.0002: Unknown collection encountered with usage 200319
+Jul 31 18:51:00 hostname kernel: apple-ibridge-hid 0003:05AC:8600.0002: Unknown collection encountered with usage 200201
+Jul 31 18:51:00 hostname kernel: apple-ibridge-hid 0003:05AC:8600.0002: Unknown collection encountered with usage 200202
+Jul 31 18:51:00 hostname kernel: hid-sensor-hub 0003:1D6B:0301.000D: hidraw1: USB HID v0.00 Device [iBridge Virtual HID 0003:05AC:8600.0002/1d6b:0301] on 
+
+============================================
+  LOOK AT THE TOUCH BAR. Then try holding Fn.
+  To undo: REBOOT. Do not run rmmod.
+============================================

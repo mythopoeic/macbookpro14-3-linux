@@ -1,0 +1,22 @@
+# kernel module build artifacts
+*.ko
+*.o
+*.mod
+*.mod.c
+*.symvers
+*.order
+.tmp_versions/
+.*.cmd
+
+# python
+__pycache__/
+*.pyc
+
+# editors / OS
+*~
+*.swp
+.DS_Store
+
+# symlink to the live driver build tree (lives at ~/t1-touchbar-port,
+# left there because the test scripts hardcode that path)
+t1-ibridge/apple-ib-drv

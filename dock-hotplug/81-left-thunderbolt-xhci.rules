@@ -1,0 +1,18 @@
+# Keep the left-hand Thunderbolt xHCI out of runtime suspend.
+#
+# 0000:07:00.0 is the Alpine Ridge USB controller serving the two LEFT-hand
+# USB-C ports (buses 3 and 4). Its PCIe PME wake path does not work: with
+# power/control=auto it sits in D3hot and sleeps straight through a device
+# insertion, logging nothing. That is why the left ports were recorded for
+# years as "do not work at all" -- the silicon and the connectors are fine, the
+# controller simply never wakes to notice.
+#
+# Forcing D0 makes it poll its own ports. A PNY drive then enumerates at full
+# 10 Gbps SuperSpeed Plus.
+#
+# The right-hand controller (0000:7d:00.0) is already pinned this way by
+# dock-xhci-recover, for a different reason.
+#
+# Cost: the controller never runtime-suspends, so a small constant power draw.
+# Unmeasured, but a fraction of a watt against two usable ports.
+ACTION=="add|bind", SUBSYSTEM=="pci", KERNEL=="0000:07:00.0", ATTR{power/control}="on", ATTR{d3cold_allowed}="0"

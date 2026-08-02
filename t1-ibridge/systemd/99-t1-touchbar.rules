@@ -1,0 +1,12 @@
+# Start the userspace Touch Bar daemon when the T1 enumerates healthy.
+#
+# 05ac:8600 is the working iBridge. 05ac:1281 is the same silicon in DFU /
+# recovery with no firmware, which has no Touch Bar to drive -- so match 8600
+# only and let a recovery-mode T1 sit untouched.
+#
+# This must sort AFTER /etc/udev/rules.d/39-usbmuxd.rules, the override that
+# stops usbmuxd unconfiguring the device. If usbmuxd wins, the interfaces (and
+# therefore the hidraw nodes) never appear at all -- see ../README.md section 2.
+
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="8600", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}+="t1-touchbar.service"

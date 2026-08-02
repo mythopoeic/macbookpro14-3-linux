@@ -1,0 +1,33 @@
+[Unit]
+Description=Apple T1 Touch Bar (userspace, hidraw)
+Documentation=file:///home/youruser/Projects/macbookpro14-3-ubuntu/t1-ibridge/README.md
+# Started by 99-t1-touchbar.rules when the T1 enumerates as 05ac:8600.
+# Nothing here loads a kernel module; see patches/UPSTREAM.md for why that
+# matters on this machine.
+#
+# No BindsTo= on a specific hidraw node: the numbering is not stable. The
+# daemon polls for its nodes at startup instead, and exits if the T1 goes
+# away, which lets udev start a fresh instance when it comes back.
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/t1-touchbar-daemon --base-mode spcl --fn-mode fn --idle-timeout 60 --dim-timeout 60
+# Turn the bar off on the way out so it does not stay lit with no daemon.
+ExecStopPost=-/usr/local/sbin/t1-touchbar-daemon --oneshot --display off
+Restart=on-failure
+RestartSec=3
+
+# The daemon needs root only for /dev/hidraw* and /dev/input/event*.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

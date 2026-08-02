@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Manual dock recovery. The same reset now runs automatically on hotplug via
+# dock-superspeed-check.service; this stays as the by-hand escape hatch, and
+# forces the reset even if one ran moments ago.
+#
+# The layout half used to call fix-monitor-order.py, which sorted monitors by
+# EDID serial but forced primary onto index 0 — the built-in panel. It is
+# replaced by dock-monitor-profiles, which restores the stored profile for
+# whichever dock and monitor combination is attached, primary included.
+set -Eeuo pipefail
+
+RECOVER="/usr/local/sbin/dock-xhci-recover"
+PROFILES="$HOME/.local/bin/dock-monitor-profiles"
+
+if [[ ! -x "$RECOVER" ]]; then
+    echo "Error: $RECOVER is missing. Run the dock-hotplug installer."
+    exit 1
+fi
+
+if [[ ! -x "$PROFILES" ]]; then
+    echo "Error: $PROFILES is missing or not executable."
+    exit 1
+fi
+
+echo "Authenticating for the USB-controller reset..."
+sudo -v
+
+echo "Resetting the dock's USB controller..."
+
+if ! sudo DOCK_RECOVER_FORCE=1 "$RECOVER"; then
+    echo
+    echo "Recovery did not bring the dock back."
+    echo "Try power-cycling the dock, then run recover-displays again."
+    exit 1
+fi
+
+echo "DisplayLink detected."
+echo "Waiting for GNOME to expose the displays, then restoring the layout..."
+
+layout_fixed=false
+
+for _ in {1..15}; do
+    output="$("$PROFILES" apply 2>&1 || true)"
+    printf '%s\n' "$output"
+
+    if grep -Eq \
+        'applied profile |layout already matches the profile' \
+        <<<"$output"
+    then
+        layout_fixed=true
+        break
+    fi
+
+    sleep 2
+done
+
+if [[ "$layout_fixed" != true ]]; then
+    echo
+    echo "DisplayLink returned, but the layout was not restored."
+    echo "If this combination has no profile yet, arrange the displays in"
+    echo "Settings and run:  dock-monitor-profiles save"
+    echo "The dock-monitor-profiles daemon will keep trying meanwhile."
+    exit 1
+fi
+
+echo
+echo "DisplayLink recovered and the monitor layout restored."

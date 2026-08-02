@@ -1,0 +1,39 @@
+=== phase 1: thermald RUNNING ===
+  thermald: active
+  setting PL1=40W
+  immediately after write: 40W
+  with thermald up:
+    t+3  s PL1=40W
+    t+6  s PL1=40W
+    t+9  s PL1=40W
+    t+12 s PL1=40W
+    t+15 s PL1=40W
+    t+18 s PL1=40W
+    t+21 s PL1=40W
+    t+24 s PL1=40W
+    t+27 s PL1=40W
+    t+30 s PL1=40W
+    t+33 s PL1=40W
+    t+36 s PL1=40W
+
+=== phase 2: thermald STOPPED ===
+  thermald: inactive
+  setting PL1=40W
+  immediately after write: 40W
+  with thermald down:
+    t+3  s PL1=40W
+    t+6  s PL1=40W
+    t+9  s PL1=40W
+    t+12 s PL1=40W
+    t+15 s PL1=40W
+    t+18 s PL1=40W
+    t+21 s PL1=40W
+    t+24 s PL1=40W
+    t+27 s PL1=40W
+    t+30 s PL1=40W
+    t+33 s PL1=40W
+    t+36 s PL1=40W
+
+=== restoring ===
+restored: thermald=active PL1=40W
+restored: thermald=active PL1=40W
