@@ -242,3 +242,9 @@ which is why both crashes looked like silent hard locks.
 `touchbar-attempt.log` is the recorded output, written with `sync` after every
 step. It survived, but it is not what made the crashes diagnosable — the kdump
 vmcores in `/var/crash` were.
+
+## 5. Surviving suspend/resume
+
+The Touch Bar goes dark after every S3 resume and cannot be revived through
+HID writes or USB re-enumeration — the T1 needs a firmware-level wake call.
+See [/t1-ibridge/SUSPEND-RESUME.md](SUSPEND-RESUME.md) for the full setup.
